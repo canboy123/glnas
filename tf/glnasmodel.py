@@ -50,6 +50,7 @@ class Glnas(object):
             "sepconv": [],
             "dilconv": [],
             "srn": [],
+            "skip_connect": [],
             "elu": ["elu", "relu", "prelu", "leakyrelu"],
             "relu": ["elu", "relu", "prelu", "leakyrelu"],
             "prelu": ["elu", "relu", "prelu", "leakyrelu"],
@@ -113,7 +114,7 @@ class Glnas(object):
     """
     Create a starting model of GLNAS
     """
-    def createMiddleNetwork(self, layer_index, isTf=False, setFilter=32, down_sample=False, dataset=None):
+    def createMiddleNetwork(self, layer_index, isTf=False, setFilter=32, down_sample=False, dataset=None, freeze_pre_layer=True):
         output_activation = "softmax"
 
         # In tensorflow, we use 'softmax_cross_entropy_with_logit()', so we do not need to use 'softmax' at the output layer
@@ -122,8 +123,9 @@ class Glnas(object):
 
         if self._best_model is not None:
             # Stop the update of the weight for the previous layer
-            for layer in self._best_model.layers:
-                layer.trainable = False
+            if freeze_pre_layer:
+                for layer in self._best_model.layers:
+                    layer.trainable = False
 
             inputs = self._best_model.input
             fixed_layer = self._best_model.layers[-4].output
@@ -142,15 +144,29 @@ class Glnas(object):
                 fixed_layer = StartingBackbone(setFilter, 3, 1, "same", None, self._kernel_initializer,
                                                self._kernel_regularizer, "sb_0", relu_position=self._config["relu_position"])(inputs)
 
+        # Newly added preprocessing layer before each cell
+        kernel = 1
+        if down_sample is False:
+            stride = 1
+        else:
+            # We use stride 1 even though it is down_sample because the size will be down sample in the skip connection
+            stride = 1
+            # stride = 2
+        kernel_initializer = self._kernel_initializer
+        kernel_regularizer = self._kernel_regularizer
+        name = f"preprocessinglayer_{layer_index}"
+        post_fixed_layer = PreprocessingLayer(setFilter, kernel, stride, kernel_initializer, kernel_regularizer, name)(fixed_layer)
+        # post_fixed_layer = fixed_layer
+
         _ops, _classifier_index = self._add_search_space_op_to_layer(layer_index, setFilter, fixed_layer, output_activation,
-                                                                     down_sample, relu_position=self._config["relu_position"])
+                                                                     down_sample, relu_position=self._config["relu_position"], post_fixed_layer=post_fixed_layer)
         self._total_models = _classifier_index
 
         self._models = tf.keras.models.Model(inputs=inputs, outputs=_ops)
         del inputs, _ops
 
     def _add_search_space_op_to_layer(self, layer_index, setFilter, fixed_layer, output_activation,
-                                      down_sample=False, relu_position="last"):
+                                      down_sample=False, relu_position="last", post_fixed_layer=None):
         pre_layer_name = fixed_layer.name
 
         # Only get the name that we have defined it, which remove the remaining name at behind
@@ -214,7 +230,11 @@ class Glnas(object):
                 op = OPS[op_name](filters, kernel, stride, activation, padding, pool, rate, unit,
                                   kernel_initializer, kernel_regularizer, name, self._config["relu_position"])
 
-                x = op(fixed_layer)
+                if post_fixed_layer is None:
+                    x = op(fixed_layer)
+                else:
+                    x = op(post_fixed_layer)
+
                 if self._layer_before_flatten == "average":
                     x = AveragePooling2D(pool_size=(self._ending_avg_pool_size, self._ending_avg_pool_size))(x)
                 else:
@@ -294,7 +314,11 @@ class Glnas(object):
                 op = SimpleResNet(filters, kernel, stride, padding, name, layer_output, kernel_initializer, kernel_regularizer,
                                   pre_layer_setting, down_sample, num_of_pool, relu_position=relu_position)
 
-                x = op(fixed_layer, layer_output)
+                if post_fixed_layer is None:
+                    x = op(fixed_layer, layer_output)
+                else:
+                    x = op(post_fixed_layer, layer_output)
+
                 if self._layer_before_flatten == "average":
                     x = AveragePooling2D(pool_size=(self._ending_avg_pool_size, self._ending_avg_pool_size))(x)
                 else:
@@ -334,6 +358,8 @@ class Glnas(object):
             output = Dense(self._num_class, name=f"classifier_{layer_index}_0")(x)
 
             self._best_model = tf.keras.models.Model(inputs=self._models.input, outputs=output)
+            # print("BEST MODEL SUMMARY")
+            # self._best_model.summary()
 
     def getSubModel(self, layer_index, output_index):
         sub_model = tf.keras.models.Model(inputs=self._models.input, outputs=self._models.get_layer(f'classifier_{layer_index}_{output_index}').output)
