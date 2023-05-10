@@ -143,6 +143,7 @@ featureBlockSearchSpace = [
     # {'sepconv': {'filters': 128, "kernel": (7, 7), "stride": 1, "padding": "same"}},
     # {'sepconv': {'filters': 128, "kernel": (3, 3), "stride": 1, "padding": "valid"}},
     # {'sepconv': {'filters': 128, "kernel": (3, 3), "stride": 2, "padding": "valid"}},
+    # {'skip_connect': {"stride": 1}},
 ]
 
 classificationSearchSpace = [
@@ -179,6 +180,7 @@ OPS = {
     'convbatchmax': lambda filters, kernel, stride, activation, padding, pool, rate, unit, kernel_initializer, kernel_regularizer, name, relu_position: Conv2dBatchNormMax(filters, kernel, stride, padding, activation=activation, pool=pool, kernel_initializer=kernel_initializer, kernel_regularizer=kernel_regularizer, name=name, relu_position=relu_position),
     'convbatchavg': lambda filters, kernel, stride, activation, padding, pool, rate, unit, kernel_initializer, kernel_regularizer, name, relu_position: Conv2dBatchNormAvg(filters, kernel, stride, padding, activation=activation, pool=pool, kernel_initializer=kernel_initializer, kernel_regularizer=kernel_regularizer, name=name, relu_position=relu_position),
     'convbatchmaxdrop': lambda filters, kernel, stride, activation, padding, pool, rate, unit, kernel_initializer, kernel_regularizer, name, relu_position: Conv2dBatchNormMaxDrop(filters, kernel, stride, padding, activation=activation, pool=pool, rate=rate, name=name),
+    'skip_connect': lambda filters, kernel, stride, activation, padding, pool, rate, unit, kernel_initializer, kernel_regularizer, name, relu_position: Identity(name) if stride == 1 else FactorizedReduce(filters, kernel, stride, kernel_initializer=kernel_initializer, kernel_regularizer=kernel_regularizer, name=name),
 }
 
 class StartingBackboneImgNet(tf.keras.Model):
@@ -291,6 +293,43 @@ class StartingBackbone(tf.keras.Model):
     # def get_config(self):
     #     return {"kernel_regularizer": self.__kernel_regularizer, "filters": self.__filters, "stride": self.__strides,
     #             "kernel": self.__kernel, "padding": self.__padding, "activation": self.__activation, "name": self._name}
+
+class PreprocessingLayer(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel, stride, kernel_initializer, kernel_regularizer, name, relu_position="last"):
+        super(PreprocessingLayer, self).__init__()
+        self.__filters = filters
+        self.__kernel = kernel
+        self.__strides = stride
+        self.__kernel_initializer = kernel_initializer
+        self.__kernel_regularizer = kernel_regularizer
+        self._name = f"{name}"
+        self.relu_position = relu_position
+
+    def build(self, input_shape):
+        if self.relu_position == "last":
+            self.op = tf.keras.Sequential([
+                            Conv2D(self.__filters, self.__kernel, self.__strides,
+                                   kernel_initializer=self.__kernel_initializer,
+                                   kernel_regularizer=self.__kernel_regularizer, name=f"{self._name}_conv2d"),
+                            BatchNormalization(name=f"{self._name}_batchNorm"),
+                            ReLU(name=f"{self._name}_relu")
+                        ])
+        else:
+            self.op = tf.keras.Sequential([
+                            ReLU(name=f"{self._name}_relu"),
+                            Conv2D(self.__filters, self.__kernel, self.__strides,
+                                   kernel_initializer=self.__kernel_initializer,
+                                   kernel_regularizer=self.__kernel_regularizer, name=f"{self._name}_conv2d"),
+                            BatchNormalization(name=f"{self._name}_batchNorm"),
+                        ])
+
+    def call(self, inputs):
+        if inputs.dtype.base_dtype != self._compute_dtype_object.base_dtype:
+            inputs = tf.cast(inputs, dtype=self._compute_dtype_object)
+
+        x = self.op(inputs)
+
+        return x
 
 class Conv2dBatchNorm(tf.keras.Model):
     def __init__(self, filters, kernel, stride, padding, activation, kernel_initializer, kernel_regularizer, name, relu_position="last"):
@@ -480,7 +519,140 @@ class Conv2dBatchNormMaxDrop(tf.keras.Model):
     #             "kernel": self.__kernel, "padding": self.__padding, "activation": self.__activation, "pool": self.__pool,
     #             "rate": self.__rate, "name": self._name}
 
+
 class SimpleResNet(tf.keras.Model):
+    def __init__(self, filter, kernel, stride, padding, name, pre_layer, kernel_initializer=None,
+                 kernel_regularizer=None,
+                 pre_layer_setting=None, down_sample=False, num_of_pool=0, relu_position="last"):
+        super().__init__()
+
+        self.__filter = filter
+        self.__kernel_initializer = kernel_initializer
+        self.__kernel_regularizer = kernel_regularizer
+        self.__down_sample = down_sample
+        self.__num_of_pool = num_of_pool
+        self.__strides = stride
+        # self.__kernel = kernel
+        # self.__padding = padding
+        self.__pre_layer = pre_layer
+        self.__pre_layer_shape = pre_layer.shape
+        # self.__pre_layer_setting = pre_layer_setting
+        self._name = f"{name}"
+        self.relu_position = relu_position
+
+    def build(self, input_shape):
+        # if self.relu_position == "last":
+        #     self.op = tf.keras.Sequential([
+        #         Conv2D(self.__filter, kernel_size=3, strides=self.__strides, padding='same', use_bias=False,
+        #                kernel_initializer=self.__kernel_initializer,
+        #                kernel_regularizer=self.__kernel_regularizer,
+        #                name=f"{self._name}_conv_1"),
+        #         BatchNormalization(name=f"{self._name}_bn1"),
+        #     ])
+        # else:
+        #     self.op = tf.keras.Sequential([
+        #         ReLU(name=f"{self._name}_relu_1"),
+        #         Conv2D(self.__filter, kernel_size=3, strides=self.__strides, padding='same', use_bias=False,
+        #                kernel_initializer=self.__kernel_initializer,
+        #                kernel_regularizer=self.__kernel_regularizer,
+        #                name=f"{self._name}_conv_1"),
+        #         BatchNormalization(name=f"{self._name}_bn1"),
+        #     ])
+        #
+        # if self.__down_sample:
+        #     if self.relu_position == "last":
+        #         self.shortcut = tf.keras.Sequential([
+        #             Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+        #                    kernel_initializer=self.__kernel_initializer,
+        #                    kernel_regularizer=self.__kernel_regularizer,
+        #                    name=f"{self._name}_conv_2"),
+        #             BatchNormalization(name=f"{self._name}_bn2")
+        #         ])
+        #     else:
+        #         self.shortcut = tf.keras.Sequential([
+        #             ReLU(name=f"{self._name}_relu_2"),
+        #             Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+        #                    kernel_initializer=self.__kernel_initializer,
+        #                    kernel_regularizer=self.__kernel_regularizer,
+        #                    name=f"{self._name}_conv_2"),
+        #             BatchNormalization(name=f"{self._name}_bn2")
+        #         ])
+        # else:
+        #     if self.__pre_layer.shape[-1] == self.__filter and input_shape[-1] == self.__filter:
+        #         self.shortcut = lambda x: x
+        #     else:
+        #         if self.relu_position == "last":
+        #             self.shortcut = tf.keras.Sequential([
+        #                 Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+        #                        kernel_initializer=self.__kernel_initializer,
+        #                        kernel_regularizer=self.__kernel_regularizer,
+        #                        name=f"{self._name}_conv_2"),
+        #                 BatchNormalization(name=f"{self._name}_bn2")
+        #             ])
+        #         else:
+        #             self.shortcut = tf.keras.Sequential([
+        #                 ReLU(name=f"{self._name}_relu_2"),
+        #                 Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+        #                        kernel_initializer=self.__kernel_initializer,
+        #                        kernel_regularizer=self.__kernel_regularizer,
+        #                        name=f"{self._name}_conv_2"),
+        #                 BatchNormalization(name=f"{self._name}_bn2")
+        #             ])
+
+        if self.__num_of_pool > 0:
+            self.shortcut = tf.keras.Sequential()
+            if self.relu_position == "first":
+                self.shortcut.add(ReLU(name=f"{self._name}_relu_3"))
+            for i in range(self.__num_of_pool):
+                tmp_filter = input_shape[-1] / 2 ** (self.__num_of_pool - i - 1)
+                self.shortcut.add(Conv2D(tmp_filter, kernel_size=1, strides=2, use_bias=False,
+                                          kernel_initializer=self.__kernel_initializer,
+                                          kernel_regularizer=self.__kernel_regularizer,
+                                          name=f"{self._name}_conv_{i + 1}"))
+                self.shortcut.add(BatchNormalization(name=f"{self._name}_bn{i + 1}"))
+        else:
+            self.shortcut = lambda x: x
+
+        self.merge = Add()
+
+    def call(self, input, input2):
+        # print("input", input)
+        # print("input2", input2)
+        # input2 = self.tmp_model(input2)
+        # print("after input2 1", input2)
+        input2 = self.shortcut(input2)
+        # print("after input2 2", input2)
+
+        # x = tf.keras.activations.relu(self.bn1(self.conv1(input)))
+        # x = self.op(input)
+        # print("after input", x)
+        # x = self.merge([self.shortcut(input2), x])
+
+        # TODO: It should be only 1 operation to change one of the input so that they can be added together
+        # Fixme:
+        x = self.merge([input2, input])
+        x = tf.keras.activations.relu(x)
+
+        return x
+
+    # def get_config(self):
+    #     config = super(SimpleResNet, self).get_config()
+    #     config.update({"kernel": self.__kernel, "stride": self.__strides, "padding": self.__padding, "name": self._name,
+    #             "pre_layer": self.__pre_layer, "kernel_regularizer": self.__kernel_regularizer,
+    #             "pre_layer_setting": self.__pre_layer_setting,
+    #             "down_sample": self.__down_sample})
+    #     return config
+
+    # def get_config(self):
+    #     return {"kernel": self.__kernel, "stride": self.__strides, "padding": self.__padding, "name": self._name,
+    #             "pre_layer": self.__pre_layer, "kernel_regularizer": self.__kernel_regularizer,
+    #             "pre_layer_setting": self.__pre_layer_setting,
+    #             "down_sample": self.__down_sample}
+    # @classmethod
+    # def from_config(cls, config):
+    #     return cls(**config)
+
+class SimpleResNet_old(tf.keras.Model):
     def __init__(self, filter, kernel, stride, padding, name, pre_layer, kernel_initializer=None, kernel_regularizer=None,
                  pre_layer_setting=None, down_sample=False, num_of_pool=0, relu_position="last"):
         super().__init__()
@@ -561,7 +733,7 @@ class SimpleResNet(tf.keras.Model):
         if self.__num_of_pool > 0:
             self.tmp_model = tf.keras.Sequential()
             if self.relu_position == "first":
-                self.tmp_model.add(ReLU(name=f"{self._name}_bn3"))
+                self.tmp_model.add(ReLU(name=f"{self._name}_relu_3"))
             for i in range(self.__num_of_pool):
                 tmp_filter = input_shape[-1] / 2 ** (self.__num_of_pool-i-1)
                 self.tmp_model.add(Conv2D(tmp_filter, kernel_size=1, strides=2, use_bias=False,
@@ -586,6 +758,7 @@ class SimpleResNet(tf.keras.Model):
         x = self.op(input)
         # print("after input", x)
         # x = self.merge([self.shortcut(input2), x])
+
         x = self.merge([input2, x])
         x = tf.keras.activations.relu(x)
 
@@ -729,3 +902,50 @@ class SepConv(tf.keras.Model):
                 "kernel_initializer": self.__kernel_initializer,
                 "kernel_regularizer": self.__kernel_regularizer,
                 "name": self._name}
+
+
+class Identity(tf.keras.layers.Layer):
+    """Identity"""
+    def __init__(self, name='Identity', **kwargs):
+        super(Identity, self).__init__(name=name, **kwargs)
+
+    def call(self, x):
+        return x
+
+class FactorizedReduce(tf.keras.layers.Layer):
+    """Factorized Reduce Layer"""
+    def __init__(self, filters, kernel, stride, kernel_initializer, kernel_regularizer, name, affine=True, relu_position="last"):
+        super(FactorizedReduce, self).__init__()
+        # assert filter % 2 == 0
+        self.__filters = filters
+        self.__kernel = kernel
+        self.__stride = stride
+        self.__kernel_initializer = kernel_initializer
+        self.__kernel_regularizer = kernel_regularizer
+        self._name = name
+        self._affine = affine
+        self.relu_position = relu_position
+
+    def build(self, input_shape):
+        self.relu = ReLU(name=f"{self._name}_relu")
+        self.conv_1 = Conv2D(self.__filters, kernel_size=1, strides=self.__stride, use_bias=False,
+                       kernel_initializer=self.__kernel_initializer,
+                       kernel_regularizer=self.__kernel_regularizer,
+                       name=f"{self._name}_conv_1")
+        self.conv_2 = Conv2D(self.__filters, kernel_size=1, strides=self.__stride, use_bias=False,
+                       kernel_initializer=self.__kernel_initializer,
+                       kernel_regularizer=self.__kernel_regularizer,
+                       name=f"{self._name}_conv_2")
+        self.bn = BatchNormalization(name=f"{self._name}_batchNorm")
+
+    def call(self, x):
+        if self.relu_position == "first":
+            out = tf.concat([self.conv_1(x), self.conv_2(x)], axis=-1)
+            out = self.bn(out)
+            out = self.relu(out)
+        else:
+            x = self.relu(x)
+            out = tf.concat([self.conv_1(x), self.conv_2(x)], axis=-1)
+            out = self.bn(out)
+
+        return out
