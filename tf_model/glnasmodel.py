@@ -14,6 +14,7 @@ from operations import *
 from model import createStartingGLNASModel, addLayerToGLNASModel, addClassificationLayerToGLNASModel, Trainer, \
     oneOutputLayerAfterFlatten, createStemForGLNASModel
 
+#123123
 weight_decay = 3e-4
 class Glnas(object):
     """Trains a ResNetCifar10 model."""
