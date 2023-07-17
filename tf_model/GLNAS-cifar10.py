@@ -39,7 +39,7 @@ num_classes = 10
 input_shape = (32, 32, 3)
 flatten_shape = 32 * 32 * 3
 inputs = tf.keras.Input(shape=input_shape)
-num_of_layer_feature_extraction = 15
+num_of_layer_feature_extraction = 20
 num_of_layer_classification = 0
 
 isTf = True
@@ -92,6 +92,9 @@ use_only_add_layer = False
 relu_position = "last"
 relu_position = "first"
 
+use_preprocessing_layer = True
+# use_preprocessing_layer = False
+
 use_weight_decay = True
 # use_weight_decay = False
 
@@ -124,13 +127,13 @@ if use_weight_decay:
 if bool_load_model is not True:
     d1 = datetime.now().strftime("%Y%m%d%H00_"+CUDA_DEVICE_INDEX)
 else:
-    d1 = "202305092100_0"
+    d1 = "202305171500_0"
 
 CONST_SAVED_MODEL_OUTDIR = f"../saved_models/cifar10_tf_e{epochs}_{d1}"
 CONST_SAVED_MODEL_DIR = CONST_SAVED_MODEL_OUTDIR+"/"+"saved_model_dir"
 Path(f"{CONST_SAVED_MODEL_DIR}").mkdir(parents=True, exist_ok=True)
 
-load_model_layer_index = 7
+load_model_layer_index = 13
 CONST_LOAD_MODEL_PATH = f"{CONST_SAVED_MODEL_OUTDIR}/saved_model_dir_{load_model_layer_index}"
 
 today = date.today()
@@ -145,7 +148,7 @@ learning_rate = False
 learning_rate = 0.01
 
 CONST_SPLIT_FILTER_SIZE = 3 # Split the size of the filter into 32, 64, 128, 256, 512
-CONST_STARTING_FILTER = 12
+CONST_STARTING_FILTER = 32
 
 config = {
     "use_layer_restriction": useLayerRestriction,
@@ -396,7 +399,7 @@ def trainFeatureExtractionLayers(trainX, trainY, valX=None, valY=None, testX=Non
         # fullDataset = changeToTensorDataset(fullDatasetX, fullDatasetY, batch_size)
 
     glnas = Glnas(input_shape, num_classes, batch_size, num_of_layer_feature_extraction, featureBlockSearchSpace, classificationSearchSpace,
-                  decay_steps, use_kernel_reg=useKernelReg, layer_b4_flat=layer_b4_flat, top_k=top_k, merge_or_add=merge_or_add,
+                  decay_steps, use_preprocessing_layer=use_preprocessing_layer, use_kernel_reg=useKernelReg, layer_b4_flat=layer_b4_flat, top_k=top_k, merge_or_add=merge_or_add,
                   use_only_add_layer=use_only_add_layer, ending_avg_pool_size=avg_pool_size,
                   config=config)
 
@@ -534,6 +537,7 @@ if __name__ == "__main__":
     logger.info(msg=f"useLayerRestriction: {useLayerRestriction}, use_weight_decay: {use_weight_decay}, repeat: {repeat}, useImgGenerator: {useImgGenerator}")
     logger.info(msg=f"layer_b4_flat: {layer_b4_flat}, eval_performance: {eval_performance}, topk: {top_k}, use_only_add_layer: {use_only_add_layer}")
     logger.info(msg=f"merge_or_add: {merge_or_add}. relu_position: {relu_position}, freeze_pre_layer: {freeze_pre_layer}")
+    logger.info(msg=f"use_preprocessing_layer: {use_preprocessing_layer}")
     start_time = time.time()
     main()
     end_time = time.time()

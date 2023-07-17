@@ -519,7 +519,6 @@ class Conv2dBatchNormMaxDrop(tf.keras.Model):
     #             "kernel": self.__kernel, "padding": self.__padding, "activation": self.__activation, "pool": self.__pool,
     #             "rate": self.__rate, "name": self._name}
 
-
 class SimpleResNet(tf.keras.Model):
     def __init__(self, filter, kernel, stride, padding, name, pre_layer, kernel_initializer=None,
                  kernel_regularizer=None,
@@ -598,29 +597,70 @@ class SimpleResNet(tf.keras.Model):
         #                        name=f"{self._name}_conv_2"),
         #                 BatchNormalization(name=f"{self._name}_bn2")
         #             ])
+        # print(f"num_of_pool: {self.__num_of_pool}")
 
+        # Change the filter of the input_1 to the same filter that we should use or the size of the input_1
+        # E.g.: input_1 => (32, 32, 112), self.__filter => (28), then we convert input_1 to (32, 32, 28)
+        # E.g.: input_1 => (32, 32, 28), self.__filter => (28). self.__strides = 2, then we convert input_1 to (16, 16, 28)
+        filter_for_2nd_input = input_shape[-1]
+        if input_shape[-1] != self.__filter:
+            filter_for_2nd_input = self.__filter
+            self.conversion = tf.keras.Sequential([Conv2D(self.__filter, kernel_size=3, strides=self.__strides, padding='same',
+                                                          use_bias=False,
+                                                           kernel_initializer=self.__kernel_initializer,
+                                                           kernel_regularizer=self.__kernel_regularizer,
+                                                           name=f"{self._name}_in1_conv_1"),
+                                                    BatchNormalization(name=f"{self._name}_in1_bn1")])
+        else:
+            self.conversion = lambda x: x
+
+        # Change the size of the input_2 to the same size as the input_1
+        # E.g.: input_1 => (16, 16, 32), input_2 => (32, 32, 16), then we convert input_2 to (16, 16, 32)
         if self.__num_of_pool > 0:
             self.shortcut = tf.keras.Sequential()
             if self.relu_position == "first":
-                self.shortcut.add(ReLU(name=f"{self._name}_relu_3"))
+                self.shortcut.add(ReLU(name=f"{self._name}_in2_relu_1"))
             for i in range(self.__num_of_pool):
-                tmp_filter = input_shape[-1] / 2 ** (self.__num_of_pool - i - 1)
+                tmp_filter = filter_for_2nd_input / 2 ** (self.__num_of_pool - i - 1)
                 self.shortcut.add(Conv2D(tmp_filter, kernel_size=1, strides=2, use_bias=False,
                                           kernel_initializer=self.__kernel_initializer,
                                           kernel_regularizer=self.__kernel_regularizer,
-                                          name=f"{self._name}_conv_{i + 1}"))
-                self.shortcut.add(BatchNormalization(name=f"{self._name}_bn{i + 1}"))
+                                          name=f"{self._name}_in2_conv_{i + 1}"))
+                self.shortcut.add(BatchNormalization(name=f"{self._name}_in2_bn{i + 1}"))
         else:
-            self.shortcut = lambda x: x
+            if self.__pre_layer.shape[-1] == self.__filter and input_shape[-1] == self.__filter:
+                self.shortcut = lambda x: x
+
+            # Change the filter of the input_2 to the same filter as the input_1
+            # E.g.: input_1 => (16, 16, 32), input_2 => (16, 16, 64), then we convert input_2 to (16, 16, 32)
+            else:
+                if self.relu_position == "last":
+                    self.shortcut = tf.keras.Sequential([
+                        Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+                               kernel_initializer=self.__kernel_initializer,
+                               kernel_regularizer=self.__kernel_regularizer,
+                               name=f"{self._name}_in2_conv_1"),
+                        BatchNormalization(name=f"{self._name}_in2_bn1")
+                    ])
+                else:
+                    self.shortcut = tf.keras.Sequential([
+                        ReLU(name=f"{self._name}_in2_relu_1"),
+                        Conv2D(self.__filter, kernel_size=1, strides=self.__strides, use_bias=False,
+                               kernel_initializer=self.__kernel_initializer,
+                               kernel_regularizer=self.__kernel_regularizer,
+                               name=f"{self._name}_in2_conv_1"),
+                        BatchNormalization(name=f"{self._name}_in2_bn1")
+                    ])
 
         self.merge = Add()
 
     def call(self, input, input2):
         # print("input", input)
         # print("input2", input2)
-        # input2 = self.tmp_model(input2)
-        # print("after input2 1", input2)
+        # TODO: It should be only 1 operation to change one of the input so that they can be added together
+        input = self.conversion(input)
         input2 = self.shortcut(input2)
+        # print("after input1 2", input)
         # print("after input2 2", input2)
 
         # x = tf.keras.activations.relu(self.bn1(self.conv1(input)))
@@ -628,8 +668,6 @@ class SimpleResNet(tf.keras.Model):
         # print("after input", x)
         # x = self.merge([self.shortcut(input2), x])
 
-        # TODO: It should be only 1 operation to change one of the input so that they can be added together
-        # Fixme:
         x = self.merge([input2, input])
         x = tf.keras.activations.relu(x)
 

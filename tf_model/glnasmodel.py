@@ -19,7 +19,7 @@ class Glnas(object):
     """Trains a ResNetCifar10 model."""
 
     def __init__(self, input_shape, num_class, batch_size, num_of_layer, feature_search_space, classification_search_space,
-                 decay_steps, use_kernel_reg=False, layer_b4_flat="average", top_k=1, merge_or_add="add", use_only_add_layer=True,
+                 decay_steps, use_preprocessing_layer=False, use_kernel_reg=False, layer_b4_flat="average", top_k=1, merge_or_add="add", use_only_add_layer=True,
                  ending_avg_pool_size=2, config=None):
         """Constructor.
         """
@@ -41,6 +41,7 @@ class Glnas(object):
         self._config = config
         self._total_models = 1
         self._decay_steps = decay_steps
+        self._use_preprocessing_layer = use_preprocessing_layer
 
         self._skip_from_duplicated_layers = {
             "input": [],
@@ -144,19 +145,24 @@ class Glnas(object):
                 fixed_layer = StartingBackbone(setFilter, 3, 1, "same", None, self._kernel_initializer,
                                                self._kernel_regularizer, "sb_0", relu_position=self._config["relu_position"])(inputs)
 
-        # Newly added preprocessing layer before each cell
-        kernel = 1
-        if down_sample is False:
-            stride = 1
+        if self._use_preprocessing_layer:
+            # Newly added preprocessing layer before each cell
+            kernel = 1
+            if down_sample is False:
+                stride = 1
+            else:
+                # We use stride 1 even though it is down_sample because the size will be down sample in the skip connection
+                # stride = 1
+
+                stride = 2
+                # If we use preprocessing layer before each cell, then we do not have to down sample in each operator
+                down_sample = False
+            kernel_initializer = self._kernel_initializer
+            kernel_regularizer = self._kernel_regularizer
+            name = f"preprocessinglayer_{layer_index}"
+            post_fixed_layer = PreprocessingLayer(setFilter, kernel, stride, kernel_initializer, kernel_regularizer, name)(fixed_layer)
         else:
-            # We use stride 1 even though it is down_sample because the size will be down sample in the skip connection
-            stride = 1
-            # stride = 2
-        kernel_initializer = self._kernel_initializer
-        kernel_regularizer = self._kernel_regularizer
-        name = f"preprocessinglayer_{layer_index}"
-        post_fixed_layer = PreprocessingLayer(setFilter, kernel, stride, kernel_initializer, kernel_regularizer, name)(fixed_layer)
-        # post_fixed_layer = fixed_layer
+            post_fixed_layer = None
 
         _ops, _classifier_index = self._add_search_space_op_to_layer(layer_index, setFilter, fixed_layer, output_activation,
                                                                      down_sample, relu_position=self._config["relu_position"], post_fixed_layer=post_fixed_layer)
@@ -302,7 +308,11 @@ class Glnas(object):
 
                 name = f"srn_{split_layer_name}_{layer_index}_{op_index}"
 
-                input_shape1 = fixed_layer.shape[1]
+                if post_fixed_layer is None:
+                    input_shape1 = fixed_layer.shape[1]
+                else:
+                    input_shape1 = post_fixed_layer.shape[1]
+
                 input_shape2 = layer_output.shape[1]
 
                 # Reduce the size of the second input if they are different
@@ -358,8 +368,6 @@ class Glnas(object):
             output = Dense(self._num_class, name=f"classifier_{layer_index}_0")(x)
 
             self._best_model = tf.keras.models.Model(inputs=self._models.input, outputs=output)
-            # print("BEST MODEL SUMMARY")
-            # self._best_model.summary()
 
     def getSubModel(self, layer_index, output_index):
         sub_model = tf.keras.models.Model(inputs=self._models.input, outputs=self._models.get_layer(f'classifier_{layer_index}_{output_index}').output)
